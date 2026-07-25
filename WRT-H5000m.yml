@@ -1,4 +1,4 @@
-name: Build LemWRT H5000M Final Ultra-Pro
+name: Build LemWRT H5000M 
 
 on:
   workflow_dispatch:
@@ -443,7 +443,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LemWRT-H5000M-Final
+          name: LemWRT-H5000M
           # Sesuaikan path ini dengan folder target sebenarnya setelah build pertama.
           # Biasanya: openwrt/bin/targets/mediatek/filogic/
           path: |

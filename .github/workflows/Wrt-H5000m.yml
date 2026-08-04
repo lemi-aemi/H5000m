@@ -1,5 +1,4 @@
-
-name: Build LemWRT H5000M
+name: Build LemWRT H5000M Final Ultra-Pro
 
 on:
   workflow_dispatch:
@@ -35,11 +34,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
           gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev libncurses-dev zstd
-      - name: Clone OpenWrt (H5000M fork) & Custom Branding
+      - name: Clone OpenWrt (mainline, H5000M sudah resmi didukung) & Custom Branding
         run: |
-          # Clone dari fork axieyangb yang sudah menyertakan dukungan device Hiveton H5000M
-          # (device ini belum masuk mainline openwrt/openwrt, jadi harus pakai fork/branch khusus)
-          git clone https://github.com/axieyangb/openwrt-h5000m.git openwrt
+          # H5000M sudah resmi masuk openwrt/openwrt (device id: hiveton_h5000m),
+          # jadi pakai source resmi langsung, tidak perlu fork pihak ketiga lagi.
+          git clone https://github.com/openwrt/openwrt.git openwrt
           cd openwrt
 
           # CUSTOM BRANDING & LOGIN TEXT
@@ -142,6 +141,7 @@ jobs:
           luci-theme-4lpha luci-theme-argon luci-theme-bootstrap mdadm mkf2fs \
           modemmanager mt7921bt-firmware mt7922bt-firmware mt7925bt-firmware mt7981-wo-firmware \
           mt7986-wo-firmware mt7987-2p5g-phy-firmware mt7988-2p5g-phy-firmware mt7988-wo-firmware \
+          airoha-en8811h-firmware kmod-phy-airoha-en8811h \
           mtd mwan3 nano netifd nftables-json nlbwmon ntfs3-mount odhcp6c odhcpd-ipv6only openwrt-keyring \
           owut parted partx-utils pciids pciutils php8 php8-cgi php8-mod-session picocom ppp \
           ppp-mod-pppoe procd procd-seccomp procd-ujail quectel-cm rpcd rpcd-mod-file rpcd-mod-iwinfo \
@@ -166,8 +166,11 @@ jobs:
           # 1. Identitas
           uci set system.@system[0].hostname='${{ github.event.inputs.set_hostname }}'
           (echo 'mi1003'; echo 'mi1003') | passwd root
-          # 2. Universal Bridge LAN
+          # 2. Universal Bridge LAN (semua port Ethernet fisik digabung, tanpa WAN terpisah)
           uci delete network.lan
+          uci -q delete network.wan
+          uci -q delete network.wan6
+          uci -q delete network.device_wan
           uci set network.lan=interface
           uci set network.lan.device='br-lan'
           uci set network.lan.proto='static'
@@ -176,7 +179,8 @@ jobs:
           uci set network.device_lan=device
           uci set network.device_lan.name='br-lan'
           uci set network.device_lan.type='bridge'
-          for i in \$(ls /sys/class/net | grep -E 'eth|enp|ena'); do
+          # Cakupan nama port diperluas: x86 (eth/enp/ena) & ARM/Filogic (lan/wan/eth)
+          for i in \$(ls /sys/class/net | grep -E '^(eth|enp|ena|lan|wan)[0-9]*\$'); do
             uci add_list network.device_lan.ports="\$i"
           done
           # 2a. USB Tethering
@@ -266,10 +270,9 @@ jobs:
         run: |
           cd openwrt
           # Target device: Hiveton H5000M (MediaTek MT7987A / Filogic 880)
+          # Device ID dikonfirmasi resmi via firmware-selector.openwrt.org: hiveton_h5000m
           echo "CONFIG_TARGET_mediatek=y" >> .config
           echo "CONFIG_TARGET_mediatek_filogic=y" >> .config
-          # PENTING: nama device di bawah ini adalah tebakan terbaik (hiveton_h5000m).
-          # Cek nama pastinya dengan `make menuconfig` di repo axieyangb kalau build gagal karena target tidak dikenali.
           echo "CONFIG_TARGET_mediatek_filogic_DEVICE_hiveton_h5000m=y" >> .config
           echo "CONFIG_TARGET_luci=y" >> .config
           echo "CONFIG_PACKAGE_luci=y" >> .config
@@ -351,6 +354,10 @@ jobs:
           # Wireless & Drivers
           echo "CONFIG_PACKAGE_kmod-mt7921e=y" >> .config
           echo "CONFIG_PACKAGE_mt7921bt-firmware=y" >> .config
+          # PHY 2.5G Airoha EN8811H (untuk port WAN/LAN 2.5GbE H5000M)
+          echo "CONFIG_PACKAGE_kmod-phy-airoha-en8811h=y" >> .config
+          echo "CONFIG_PACKAGE_airoha-en8811h-firmware=y" >> .config
+          echo "CONFIG_PACKAGE_mt7987-2p5g-phy-firmware=y" >> .config
           echo "CONFIG_PACKAGE_kmod-mt7921s=y" >> .config
           echo "CONFIG_PACKAGE_kmod-mt7921u=y" >> .config
           echo "CONFIG_PACKAGE_kmod-mt7921-common=y" >> .config
@@ -441,10 +448,13 @@ jobs:
           cd openwrt
           # Menggunakan -k agar build tetap lanjut meskipun ada 1-2 paket yang gagal/incompatible
           make -j$(nproc) -k || make -j1 V=s -k
+      - name: Set Build Date
+        id: date
+        run: echo "date=$(date +'%d%m%Y')" >> "$GITHUB_OUTPUT"
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LemWRT-H5000M
+          name: LemWRT-H5000M_${{ steps.date.outputs.date }}
           # Sesuaikan path ini dengan folder target sebenarnya setelah build pertama.
           # Biasanya: openwrt/bin/targets/mediatek/filogic/
           path: |

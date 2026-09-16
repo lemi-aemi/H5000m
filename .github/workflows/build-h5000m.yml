@@ -1,0 +1,165 @@
+name: Build Hiveton H5000M OpenWrt 25
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+
+jobs:
+  build:
+    name: Build OpenWrt Firmware for Hiveton H5000M
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Free Disk Space & Setup Environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo apt-get update
+          sudo apt-get install -y bc binutils-gold bison build-essential ccache ecj fastjar file flex g++ gawk gcc-arm* gettext git help2man libbsd-dev libelf-dev liblzma-dev libncurses-dev libssl-dev mtd-utils meson mold ninja-build pbzip2 pigz pkg-config python3-dev python3-setuptools rsync subversion swig texinfo time u-boot-tools unzip wget xsltproc xxd zlib1g-dev zstd clang llvm
+          sudo timedatectl set-timezone "Asia/Jakarta"
+          echo "BUILD_DATE=$(date +'%Y%m%d-%H%M')" >> $GITHUB_ENV
+          echo "Build host initialized successfully."
+
+      - name: Clone OpenWrt Source (fildunsky/hiveton-h5000m)
+        run: |
+          git clone --depth 1 https://github.com/fildunsky/openwrt -b hiveton-h5000m openwrt
+          cd openwrt
+          echo "OPENWRT_ROOT=$PWD" >> $GITHUB_ENV
+
+      - name: Add & Update Feeds
+        run: |
+          cd openwrt
+          echo 'src-git sms_tool https://github.com/obsy/sms_tool.git;master' >> feeds.conf.default
+          echo 'src-git modemband https://github.com/obsy/modemband.git;main' >> feeds.conf.default
+          echo 'src-git modemdata https://github.com/obsy/modemdata.git;main' >> feeds.conf.default
+          echo 'src-git modemfeed https://github.com/koshev-msk/modemfeed.git;master' >> feeds.conf.default
+          echo 'src-git internetdetector https://github.com/gSpotx2f/luci-app-internet-detector.git;master' >> feeds.conf.default
+          
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          cd feeds/luci/applications/
+          git clone https://github.com/4IceG/luci-app-sms-tool-js.git
+          git clone https://github.com/4IceG/luci-app-modemband.git
+          git clone https://github.com/4IceG/luci-app-modemdata.git
+          cd ../../..
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Inject Custom Files & EEPROM Firmware
+        run: |
+          cd openwrt
+          if [ -d "../files" ]; then
+            cp -r ../files ./
+            echo "Custom files directory injected."
+          else
+            mkdir -p files/etc/sysctl.d files/etc/init.d files/usr/bin files/lib/firmware/mediatek/mt7996
+            echo "Files directory initialized empty."
+          fi
+
+          # Memastikan permission script fancontrol dapat dieksekusi
+          if [ -f "files/usr/bin/fancontrol.sh" ]; then
+            chmod +x files/usr/bin/fancontrol.sh
+          fi
+          if [ -f "files/etc/init.d/fancontrol" ]; then
+            chmod +x files/etc/init.d/fancontrol
+          fi
+
+      - name: Generate Custom .config File
+        run: |
+          cd openwrt
+          cat <<'EOF' > .config
+          # Target Hardware Specifications
+          CONFIG_TARGET_mediatek=y
+          CONFIG_TARGET_mediatek_filogic=y
+          CONFIG_TARGET_mediatek_filogic_DEVICE_hiveton_h5000m=y
+
+          # Compiler Optimization Settings
+          CONFIG_DEVEL=y
+          CONFIG_CCACHE=y
+
+          # Wi-Fi 7 MT7992/MT7996 Drivers & Firmware
+          CONFIG_PACKAGE_kmod-mt7996e=y
+          CONFIG_PACKAGE_kmod-mt7992-23-firmware=y
+          CONFIG_PACKAGE_mt7987-2p5g-phy-firmware=y
+
+          # Thermal, Filesystem & Network Hardware Support
+          CONFIG_PACKAGE_kmod-hwmon-pwmfan=y
+          CONFIG_PACKAGE_kmod-tcp-bbr=y
+          CONFIG_PACKAGE_f2fsck=y
+          CONFIG_PACKAGE_mkf2fs=y
+
+          # LuCI Web Interface & Protocol Support
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-base=y
+          CONFIG_PACKAGE_luci-proto-xmm=y
+          CONFIG_PACKAGE_xmm-modem=y
+          CONFIG_PACKAGE_luci-app-sms-tool-js=y
+          CONFIG_PACKAGE_luci-app-modemband=y
+          CONFIG_PACKAGE_luci-app-modemdata=y
+          CONFIG_PACKAGE_luci-app-internet-detector=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+
+          # Diagnostic, System & Network Utilities
+          CONFIG_PACKAGE_nano-full=y
+          CONFIG_PACKAGE_usbutils=y
+          CONFIG_PACKAGE_pciutils=y
+          CONFIG_PACKAGE_tcpdump=y
+          CONFIG_PACKAGE_iperf3=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_ca-certificates=y
+          CONFIG_PACKAGE_bash=y
+          EOF
+
+          make defconfig
+
+      - name: Download Dependency Packages
+        run: |
+          cd openwrt
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile OpenWrt Firmware
+        run: |
+          cd openwrt
+          echo "Starting compilation on $(nproc) threads..."
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Prepare Artifacts Output with Date Tag
+        run: |
+          cd openwrt
+          mkdir -p ../firmware_output
+          
+          # Salin file sysupgrade & img dengan menambahkan timestamp
+          for file in bin/targets/mediatek/filogic/*sysupgrade.bin; do
+            if [ -f "$file" ]; then
+              base_name=$(basename "$file" .bin)
+              cp "$file" "../firmware_output/${base_name}-${BUILD_DATE}.bin"
+            fi
+          done
+
+          for file in bin/targets/mediatek/filogic/*.bin; do
+            if [ -f "$file" ] && [[ "$file" != *sysupgrade.bin ]]; then
+              base_name=$(basename "$file" .bin)
+              cp "$file" "../firmware_output/${base_name}-${BUILD_DATE}.bin"
+            fi
+          done
+
+          cp .config "../firmware_output/build-${BUILD_DATE}.config"
+          echo "Firmware files tagged with date: ${BUILD_DATE}"
+
+      - name: Upload Firmware Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hiveton_H5000M_OpenWrt25_${{ env.BUILD_DATE }}
+          path: firmware_output/*

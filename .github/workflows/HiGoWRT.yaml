@@ -47,23 +47,24 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Set Language Default to English
+    - name: Set Language Default to English & Patch HNAT Error
       run: |
         cd openwrt
         # Force default LuCI language setting into English
         sed -i 's/uci set luci.main.lang=.*/uci set luci.main.lang=en/' feeds/luci/modules/luci-base/root/etc/uci-defaults/luci-base 2>/dev/null || true
         
-        # Prefer English language packs in feeds
-        sed -i 's/CONFIG_LUCI_LANG_zh_Hans=y/# CONFIG_LUCI_LANG_zh_Hans is not set/' .config 2>/dev/null || true
-        echo "CONFIG_LUCI_LANG_en=y" >> .config
+        # Disable -Werror on MediaTek target drivers to prevent build failures
+        find target/linux/mediatek/ -type f \( -name "Makefile*" -o -name "*.mk" \) -exec sed -i 's/-Werror//g' {} + 2>/dev/null || true
 
     - name: Load Custom Config
       run: |
         [ -e files ] && mv files openwrt/files
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
         cd openwrt
-        # Pastikan bahasa Inggris diaktifkan di .config
+        # Pastikan bahasa Inggris dan abaikan kernel Werror
         echo "CONFIG_PACKAGE_luci-i18n-base-en=y" >> .config
+        echo "CONFIG_LUCI_LANG_en=y" >> .config
+        echo "# CONFIG_KERNEL_WERROR is not set" >> .config
         make defconfig
 
     - name: Download Package Source

@@ -1,0 +1,103 @@
+name: Build HigoWRT (English)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+env:
+  REPO_URL: https://github.com/Hiveton/higowrt.git
+  REPO_BRANCH: main
+  CONFIG_FILE: .config
+  UPLOAD_FIRMWARE: true
+  TZ: Asia/Jakarta
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Preposisi Lingkungan Build
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install -y build-essential clang flex bison gawk gettext git libncurses-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: Clone Source Code
+      working-directory: /workdir
+      run: |
+        df -h
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Update & Install Feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Set Language Default to English
+      run: |
+        cd openwrt
+        # Force default LuCI language setting into English
+        sed -i 's/uci set luci.main.lang=.*/uci set luci.main.lang=en/' feeds/luci/modules/luci-base/root/etc/uci-defaults/luci-base 2>/dev/null || true
+        
+        # Prefer English language packs in feeds
+        sed -i 's/CONFIG_LUCI_LANG_zh_Hans=y/# CONFIG_LUCI_LANG_zh_Hans is not set/' .config 2>/dev/null || true
+        echo "CONFIG_LUCI_LANG_en=y" >> .config
+
+    - name: Load Custom Config
+      run: |
+        [ -e files ] && mv files openwrt/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        cd openwrt
+        # Pastikan bahasa Inggris diaktifkan di .config
+        echo "CONFIG_PACKAGE_luci-i18n-base-en=y" >> .config
+        make defconfig
+
+    - name: Download Package Source
+      id: package
+      run: |
+        cd openwrt
+        make download -j$(nproc)
+        find dl -size -1024c -exec rm -f {} +
+
+    - name: Compile Firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Check Space Usage
+      if: (!cancelled())
+      run: |
+        df -hT
+
+    - name: Organize Files
+      id: organize
+      if: steps.compile.outputs.status == 'success' && !cancelled()
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload Firmware to Artifact
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: HigoWRT_English_${{ github.run_id }}
+        path: ${{ env.FIRMWARE }}
